@@ -9,9 +9,11 @@
 
   var GROUP_INTRO = {
     'A. Nhập môn C': 'Cú pháp C từ con số 0: biến, rẽ nhánh, vòng lặp, hàm, mảng, chuỗi, con trỏ, struct, cấp phát động.',
-    'B. Cấu trúc dữ liệu': 'Cách tổ chức dữ liệu: danh sách liên kết, ngăn xếp, hàng đợi, cây tìm kiếm, bảng băm.',
-    'C. Giải thuật': 'Đệ quy, tìm kiếm, các thuật toán sắp xếp, duyệt đồ thị và quy hoạch động.'
+    'B. Cấu trúc dữ liệu': 'Danh sách liên kết, ngăn xếp, hàng đợi, cây tìm kiếm, bảng băm, có demo tương tác.',
+    'C. Giải thuật': 'Đệ quy, tìm kiếm, sắp xếp, đồ thị, quy hoạch động, có demo chạy từng bước.',
+    'D. Bài toán vận dụng': 'Đề dạng thi lập trình, mỗi bài có nhiều test ẩn. Làm xong là nhớ lâu.'
   };
+  var LEVEL = { easy: ['Dễ', 'lv-easy'], mid: ['Vừa', 'lv-mid'], hard: ['Khó', 'lv-hard'] };
 
   // ---------- helpers ----------
   var store = {
@@ -38,10 +40,6 @@
     return e;
   }
 
-  function escapeHtml(s) {
-    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  }
-
   var done = new Set();
   try { done = new Set(JSON.parse(store.get('done', '[]'))); } catch (e) { done = new Set(); }
 
@@ -50,6 +48,12 @@
     done.add(id);
     store.set('done', JSON.stringify(Array.from(done)));
     renderNav();
+  }
+
+  var currentViz = null;
+  function disposeViz() {
+    if (currentViz && currentViz.destroy) currentViz.destroy();
+    currentViz = null;
   }
 
   // ---------- editor ----------
@@ -125,6 +129,10 @@
 
     var out = h('pre', { class: 'out empty', 'aria-live': 'polite' });
     out.textContent = 'Kết quả chương trình sẽ hiện ở đây.';
+    var term = h('div', { class: 'term' }, [
+      h('div', { class: 'term-head' }, [h('i'), h('i'), h('i'), h('span', { text: '$ ./chuongtrinh' })]),
+      out
+    ]);
 
     var runBtn = h('button', { class: 'btn primary', type: 'button', onclick: function () { run(); } });
     runBtn.textContent = '▶ Chạy';
@@ -194,8 +202,8 @@
     refresh();
     var el = h('div', { class: 'runner' }, [
       toolbar, editor,
-      h('label', { class: 'field-label', text: 'Dữ liệu nhập (bàn phím của chương trình, dùng cho scanf)' }),
-      stdin, out
+      h('label', { class: 'field-label', text: '> dữ liệu nhập (bàn phím của chương trình, dùng cho scanf)' }),
+      stdin, term
     ]);
     return {
       el: el, ta: ta, stdin: stdin, run: run,
@@ -205,68 +213,114 @@
   }
 
   // ---------- grading ----------
+  var CONCURRENCY = 4;
+
   function createExercise(lesson) {
     var ex = lesson.ex;
+    var tests = ex.tests;
     var ed = createEditor({
-      key: lesson.id + ':ex', code: ex.starter, input: ex.tests[0].input,
+      key: lesson.id + ':ex', code: ex.starter, input: tests[0].input,
       label: 'Mã bài tập'
     });
-    var results = h('div', { class: 'results' });
+    var chips = h('div', { class: 'chips', 'aria-label': 'Kết quả từng test' });
+    var detail = h('div', { class: 'results' });
     var summary = h('div');
     var gradeBtn = h('button', { class: 'btn', type: 'button' });
-    gradeBtn.textContent = '✔ Chấm bài';
+    gradeBtn.textContent = '✔ Chấm ' + tests.length + ' test';
     var busy = false;
+    var res = [];
+
+    function showDetail(i) {
+      var r = res[i];
+      detail.innerHTML = '';
+      if (!r) return;
+      var row = h('div', { class: 'res' });
+      row.append(h('b', { text: 'Test ' + (i + 1) + (r.status === 'pass' ? ': đạt ✓' : r.status === 'skip' ? ': bỏ qua (chương trình có vẻ bị treo)' : ': chưa đúng ✗') }));
+      row.append(h('div', { class: 'cap', text: 'Dữ liệu vào' }));
+      row.append(h('pre', { text: tests[i].input.replace(/\n$/, '') || '(trống)' }));
+      row.append(h('div', { class: 'cap', text: 'Kết quả mong đợi' }));
+      row.append(h('pre', { text: tests[i].expected }));
+      row.append(h('div', { class: 'cap', text: 'Chương trình của bạn in ra' }));
+      var msg = r.got || '(không in gì)';
+      if (r.timedOut) msg += '\n⏱ chạy quá lâu, đã dừng';
+      row.append(h('pre', { text: msg }));
+      detail.append(row);
+    }
+
+    function drawChips() {
+      chips.innerHTML = '';
+      tests.forEach(function (t, i) {
+        var r = res[i];
+        var cls = 'chip' + (r ? (r.status === 'pass' ? ' pass' : (r.status === 'run' ? ' run' : ' fail')) : '');
+        var c = h('button', { class: cls, type: 'button', title: r && r.status !== 'run' ? 'Xem chi tiết test ' + (i + 1) : '' });
+        c.textContent = 'T' + (i + 1);
+        c.addEventListener('click', function () { if (res[i] && res[i].status !== 'run') showDetail(i); });
+        chips.append(c);
+      });
+    }
 
     gradeBtn.addEventListener('click', function () {
       if (busy) return;
       busy = true;
       gradeBtn.disabled = true;
       gradeBtn.textContent = 'Đang chấm…';
-      results.innerHTML = '';
+      detail.innerHTML = '';
       summary.innerHTML = '';
+      summary.className = '';
+      res = tests.map(function () { return null; });
+      drawChips();
       var code = ed.getCode();
-      var passed = 0;
-      var chain = Promise.resolve();
-      ex.tests.forEach(function (t, i) {
-        chain = chain.then(function () {
-          var row = h('div', { class: 'res' }, [h('b', { text: 'Test ' + (i + 1) + ': đang chạy…' })]);
-          results.append(row);
-          return window.CRunner.run(code, t.input, { timeoutMs: 4000 }).then(function (r) {
-            var got = window.CRunner.prettify(r.output);
-            var ok = !r.timedOut && !r.limited &&
-              window.CRunner.normalize(got) === window.CRunner.normalize(t.expected);
-            if (ok) passed++;
-            row.className = 'res ' + (ok ? 'pass' : 'fail');
-            row.innerHTML = '';
-            row.append(h('b', { text: 'Test ' + (i + 1) + (ok ? ': đạt ✓' : ': chưa đúng ✗') }));
-            if (!ok) {
-              row.append(h('div', { class: 'cap', text: 'Dữ liệu vào' }));
-              row.append(h('pre', { text: t.input.replace(/\n$/, '') || '(trống)' }));
-              row.append(h('div', { class: 'cap', text: 'Kết quả mong đợi' }));
-              row.append(h('pre', { text: t.expected }));
-              row.append(h('div', { class: 'cap', text: 'Chương trình của bạn in ra' }));
-              var msg = got || '(không in gì)';
-              if (r.timedOut) msg += '\n⏱ chạy quá lâu, đã dừng';
-              row.append(h('pre', { text: msg }));
-            }
-          });
-        });
-      });
-      chain.then(function () {
+      var next = 0, active = 0, finished = 0, timeouts = 0;
+
+      function finish() {
         busy = false;
         gradeBtn.disabled = false;
-        gradeBtn.textContent = '✔ Chấm bài';
-        var all = passed === ex.tests.length;
+        gradeBtn.textContent = '✔ Chấm ' + tests.length + ' test';
+        var passed = res.filter(function (r) { return r.status === 'pass'; }).length;
+        var all = passed === tests.length;
         summary.className = 'summary ' + (all ? 'ok' : 'no');
         summary.textContent = all
-          ? '🎉 Đạt cả ' + ex.tests.length + '/' + ex.tests.length + ' test. Bài này hoàn thành!'
-          : 'Đạt ' + passed + '/' + ex.tests.length + ' test. Đọc phần so sánh bên trên rồi sửa lại nhé.';
+          ? '🎉 Đạt ' + passed + '/' + tests.length + ' test. Bài này hoàn thành!'
+          : 'Đạt ' + passed + '/' + tests.length + ' test. Bấm vào ô đỏ để xem test nào sai và vì sao.';
         if (all) {
           markDone(lesson.id);
           var badge = document.getElementById('exBadge');
           if (badge) { badge.className = 'badge ok'; badge.textContent = 'Đã hoàn thành'; }
+        } else {
+          var firstBad = res.findIndex(function (r) { return r.status !== 'pass'; });
+          if (firstBad >= 0) showDetail(firstBad);
         }
-      });
+      }
+
+      function pump() {
+        while (active < CONCURRENCY && next < tests.length) {
+          (function (i) {
+            next++;
+            if (timeouts >= 2) {
+              res[i] = { status: 'skip', got: '' };
+              finished++;
+              drawChips();
+              return;
+            }
+            active++;
+            res[i] = { status: 'run' };
+            drawChips();
+            window.CRunner.run(code, tests[i].input, { timeoutMs: 4000 }).then(function (r) {
+              var got = window.CRunner.prettify(r.output);
+              var ok = !r.timedOut && !r.limited &&
+                window.CRunner.normalize(got) === window.CRunner.normalize(tests[i].expected);
+              if (r.timedOut) timeouts++;
+              res[i] = { status: ok ? 'pass' : 'fail', got: got, timedOut: r.timedOut };
+              active--;
+              finished++;
+              drawChips();
+              if (finished === tests.length) finish(); else pump();
+            });
+          })(next);
+        }
+        if (finished === tests.length && busy) finish();
+      }
+      pump();
     });
     ed.el.querySelector('.toolbar').insertBefore(gradeBtn, ed.el.querySelector('.hint'));
 
@@ -278,32 +332,67 @@
       h('summary', { text: '🔓 Xem lời giải (hãy tự thử trước)' }),
       h('pre', { text: ex.solution })
     ]);
-    return h('div', null, [
-      h('p', { class: 'ex-text', html: ex.text + ' <i>Không in thêm lời nhắc nhập, chỉ in đúng kết quả.</i>' }),
-      ed.el, summary, results, hint, sol
-    ]);
+    var kids = [];
+    if (ex.text) kids.push(h('p', { class: 'ex-text', html: ex.text + ' <i>Không in thêm lời nhắc nhập, chỉ in đúng kết quả.</i>' }));
+    kids.push(samplesBlock(tests));
+    kids.push(ed.el, summary, chips, detail, hint, sol);
+    return h('div', null, kids);
+  }
+
+  function samplesBlock(tests) {
+    var box = h('div', { class: 'samples' });
+    tests.slice(0, 2).forEach(function (t, i) {
+      var s = h('div', { class: 'sample' });
+      s.append(h('b', { text: 'Ví dụ ' + (i + 1) + ' · vào' }));
+      s.append(h('pre', { text: t.input.replace(/\n$/, '') || '(trống)' }));
+      s.append(h('b', { text: 'Ví dụ ' + (i + 1) + ' · ra' }));
+      s.append(h('pre', { text: t.expected }));
+      box.append(s);
+    });
+    return box;
   }
 
   // ---------- views ----------
+  function levelBadge(l) {
+    if (!l.level) return null;
+    return h('span', { class: 'badge ' + LEVEL[l.level][1], text: LEVEL[l.level][0] });
+  }
+
   function pageLesson(id) {
     var l = byId[id];
     var prev = LESSONS[l.index - 1];
     var next = LESSONS[l.index + 1];
     var page = h('article', { class: 'page' });
-    page.append(h('div', { class: 'crumb', text: l.group }));
-    page.append(h('h1', { text: l.title }));
+    page.append(h('div', { class: 'crumb', text: l.group + (l.tags ? '  ·  ' + l.tags.join(', ') : '') }));
+    page.append(h('h1', null, [l.title, document.createTextNode(' '), levelBadge(l)]));
     page.append(h('div', { class: 'prose', html: l.html }));
 
-    var tryCard = h('section', { class: 'card' }, [
-      h('h2', { text: 'Chạy thử' }),
-      createEditor({ key: l.id, code: l.code, input: l.input || '', label: 'Mã ví dụ' }).el
-    ]);
-    page.append(tryCard);
+    if (l.io) {
+      page.append(h('div', { class: 'fmt' }, [
+        h('p', { html: '<b>Dữ liệu vào.</b> ' + l.io.inp.replace(/\n/g, '<br>') }),
+        h('p', { html: '<b>Kết quả ra.</b> ' + l.io.out.replace(/\n/g, '<br>') })
+      ]));
+    }
+
+    var names = window.VIZ && window.VIZ.MAP[l.id];
+    if (names) {
+      var vizHost = h('div');
+      page.append(h('section', { class: 'card' }, [h('h2', { text: 'Minh họa trực quan' }), vizHost]));
+      currentViz = window.VIZ.mount(vizHost, names);
+    }
+
+    if (!l.noExample) {
+      page.append(h('section', { class: 'card' }, [
+        h('h2', { text: 'Chạy thử' }),
+        createEditor({ key: l.id, code: l.code, input: l.input || '', label: 'Mã ví dụ' }).el
+      ]));
+    }
 
     if (l.ex) {
-      var badge = h('span', { id: 'exBadge', class: done.has(l.id) ? 'badge ok' : 'badge', text: done.has(l.id) ? 'Đã hoàn thành' : 'Bài tập' });
+      var isDone = done.has(l.id);
+      var badge = h('span', { id: 'exBadge', class: isDone ? 'badge ok' : 'badge', text: isDone ? 'Đã hoàn thành' : l.ex.tests.length + ' test' });
       page.append(h('section', { class: 'card' }, [
-        h('h2', null, ['Tự làm ', badge]),
+        h('h2', null, [l.noExample ? 'Làm bài ' : 'Tự làm ', badge]),
         createExercise(l)
       ]));
     }
@@ -336,8 +425,12 @@ int main() {
   }
 
   function nextUnfinished() {
-    for (var i = 0; i < LESSONS.length; i++) if (!done.has(LESSONS[i].id)) return LESSONS[i];
+    for (var i = 0; i < LESSONS.length; i++) if (LESSONS[i].ex && !done.has(LESSONS[i].id)) return LESSONS[i];
     return null;
+  }
+
+  function exerciseCount() {
+    return LESSONS.filter(function (l) { return l.ex; }).length;
   }
 
   function pageHome() {
@@ -352,9 +445,16 @@ int main() {
     } else {
       cta = h('span', { class: 'badge ok', text: 'Bạn đã hoàn thành tất cả bài tập 🎉' });
     }
+    var totalTests = LESSONS.reduce(function (s, l) { return s + (l.ex ? l.ex.tests.length : 0); }, 0);
+    var vizCount = Object.keys(window.VIZ.MAP).length;
     page.append(h('section', { class: 'hero' }, [
+      h('div', { class: 'hero-tags' }, [
+        h('span', { class: 'badge', text: LESSONS.length + ' bài' }),
+        h('span', { class: 'badge', text: vizCount + ' bài có demo trực quan' }),
+        h('span', { class: 'badge', text: totalTests + ' test tự chấm' })
+      ]),
       h('h1', { text: 'Học lại C, cấu trúc dữ liệu và giải thuật từ đầu' }),
-      h('p', { text: 'Mỗi bài có lý thuyết ngắn, ví dụ chạy được ngay trên trang, và một bài tập tự chấm điểm. Không cần cài gì, mọi thứ chạy trong trình duyệt của bạn.' }),
+      h('p', { text: 'Lý thuyết ngắn, demo chạy từng bước để nhìn thấy thuật toán hoạt động, code C chạy ngay trên trang, rồi luyện bằng các bài toán vận dụng được chấm với nhiều test. Không cần cài gì.' }),
       h('div', null, [cta, h('a', { class: 'btn', href: '#/play' }, [document.createTextNode('Sân chơi tự do')])])
     ]));
 
@@ -368,7 +468,7 @@ int main() {
       var count = items.filter(function (l) { return done.has(l.id); }).length;
       grid.append(h('div', { class: 'group-card' }, [
         h('h3', { text: g }),
-        h('p', { text: (GROUP_INTRO[g] || '') + ' (' + count + '/' + items.length + ' bài)' }),
+        h('p', { text: (GROUP_INTRO[g] || '') + ' (' + count + '/' + items.length + ')' }),
         ol
       ]));
     });
@@ -379,8 +479,8 @@ int main() {
       h('ul', { html:
         '<li>Code được chạy bằng <b>PicoC</b>, một bộ thông dịch C nhỏ biên dịch sang WebAssembly. Mã của bạn chạy ngay trong trình duyệt và không được gửi đi đâu.</li>' +
         '<li>PicoC không phải trình biên dịch đầy đủ như gcc: hỗ trợ phần lớn C cơ bản (con trỏ, struct, malloc, đệ quy…) nhưng có vài khác biệt. Ví dụ với số thực nên dùng <code>double</code> và đọc bằng <code>%lf</code>.</li>' +
-        '<li>Mỗi lần chạy giới hạn 5 giây để tránh treo vì vòng lặp vô hạn.</li>' +
-        '<li>Dữ liệu cho <code>scanf</code> gõ vào ô “Dữ liệu nhập” bên dưới trình soạn thảo.</li>' +
+        '<li>Mỗi lần chạy giới hạn 5 giây (4 giây cho mỗi test khi chấm) để tránh treo vì vòng lặp vô hạn.</li>' +
+        '<li>Dữ liệu cho <code>scanf</code> gõ vào ô “dữ liệu nhập” bên dưới trình soạn thảo.</li>' +
         '<li>Tiến độ và mã bạn viết được lưu trong trình duyệt này (localStorage).</li>'
       })
     ]));
@@ -400,25 +500,28 @@ int main() {
       h('a', { href: '#/play', 'data-route': '/play', text: 'Sân chơi tự do' })
     ]);
     sidebar.append(top);
-    var pct = Math.round(done.size * 100 / LESSONS.length);
+    var total = exerciseCount();
+    var pct = Math.round(done.size * 100 / total);
     var bar = h('div', { class: 'bar' }, [h('i', { style: 'width:' + pct + '%' })]);
     sidebar.append(h('div', { class: 'nav-progress' }, [
       h('div', { class: 'nav-group', style: 'margin-left:0', text: 'Tiến độ' }),
       bar,
-      h('small', { text: 'Hoàn thành ' + done.size + '/' + LESSONS.length + ' bài tập' })
+      h('small', { text: 'Hoàn thành ' + done.size + '/' + total + ' bài tập' })
     ]));
     GROUPS.forEach(function (g) {
       sidebar.append(h('div', { class: 'nav-group', text: g }));
       LESSONS.filter(function (l) { return l.group === g; }).forEach(function (l) {
+        var kids = [h('span', { class: 'nav-mark', text: '✓' }), h('span', { text: l.title })];
+        if (l.level) kids.push(h('span', { class: 'lv ' + LEVEL[l.level][1], text: LEVEL[l.level][0] }));
         var a = h('a', {
           class: 'nav-lesson' + (done.has(l.id) ? ' done' : ''),
           href: '#/lesson/' + l.id, 'data-route': '/lesson/' + l.id
-        }, [h('span', { class: 'nav-mark', text: '✓' }), h('span', { text: l.title })]);
+        }, kids);
         sidebar.append(a);
       });
     });
     markCurrent();
-    document.getElementById('topProgress').textContent = done.size + '/' + LESSONS.length + ' bài tập';
+    document.getElementById('topProgress').textContent = done.size + '/' + total + ' bài tập';
   }
 
   function markCurrent() {
@@ -429,6 +532,7 @@ int main() {
   }
 
   function route() {
+    disposeViz();
     var hash = location.hash.replace(/^#/, '') || '/';
     var m = /^\/lesson\/([\w-]+)$/.exec(hash);
     var view;
